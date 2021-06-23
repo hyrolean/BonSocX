@@ -13,6 +13,10 @@
 class CBonTuner : public IBonDriver2
 {
 protected:
+	enum SOCXTYPE {
+		SOCX_UDP,
+		SOCX_TCP
+	};
 	struct TSIO {
 		WSAOVERLAPPED Ovl;
 		BUFFER<BYTE> Buff;
@@ -21,14 +25,28 @@ protected:
 	};
 	using TSIOQUEUE = std::vector<TSIO> ;
 	using TSIOEVENTS = BUFFER<HANDLE> ;
+    using PORTS = std::vector<std::pair<DWORD,std::wstring>> ;
+	struct SPACE {
+		std::wstring Name;
+		SOCXTYPE Type;
+		PORTS Ports ;
+		SPACE() : Type(SOCX_UDP) {}
+		SPACE(std::wstring Name_, SOCXTYPE Type_, const PORTS &Ports_)
+		 : Name(Name_), Type(Type_), Ports(Ports_) {}
+		SPACE(const SPACE &S) : Name(S.Name), Type(S.Type), Ports(S.Ports) {}
+	};
+	using SPACES = std::vector<SPACE> ;
 
 private:
 	TSIOQUEUE TSIOQueue;
 	TSIOEVENTS TSIOEvents;
 	CAsyncFifo *AsyncTsFifo;
 	event_object TsStreamEvent;
-	std::vector<std::pair<DWORD,std::wstring>> Ports;
+	std::wstring TunerName;
+	SPACES Spaces;
+    int SocType; // SOCK_STREAM / SOCK_DGRAM
 	SOCKET Soc,TcpSoc;
+	DWORD CurSpace;
 	DWORD CurChannel;
 	BOOL TunerOpened;
 	HANDLE AsyncTsThread;
@@ -36,8 +54,9 @@ private:
 	DWORD AsyncTsCurStart;
 
 protected: // settings
-    int Type; // SOCK_STREAM / SOCK_DGRAM
 	BOOL IPV6;
+	BOOL UDP;
+	BOOL TCP;
 
 	// TSIO
 	DWORD TSIOPACKETSIZE ;

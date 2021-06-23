@@ -47,10 +47,10 @@ static string ModuleFileName()
 CBonTuner::CBonTuner()
 {
 	AsyncTsFifo = NULL ;
-	Type = SOCK_DGRAM ;
+	SocType = SOCK_DGRAM ;
 	IPV6 = FALSE ;
 	TcpSoc=Soc=INVALID_SOCKET;
-	CurChannel=0xFFFFFFFF;
+	CurSpace=CurChannel=0xFFFFFFFF;
 	TunerOpened=FALSE;
 	//WinSockInitialize();
 	Initialize();
@@ -78,16 +78,18 @@ void CBonTuner::Initialize()
 
 	// initialize variables
 	if(prefix=="BONDRIVER_TCP") {
-		Type = SOCK_STREAM ;
+		TCP = TRUE ; UDP = FALSE ;
+	}else if(prefix=="BONDRIVER_UDP") {
+		UDP = TRUE ; TCP = FALSE ;
 	}else {
-		Type = SOCK_DGRAM ;
+	    UDP = TCP = TRUE ;
 	}
 	AsyncTsThread = INVALID_HANDLE_VALUE ;
 	AsyncTsTerm = FALSE ;
 
 	// TSIO
 	TSIOPACKETSIZE   = def_packet_size ;
-    TSIOQUEUENUM     = 10UL ;
+	TSIOQUEUENUM     = 10UL ;
 	TSIOPOLLTIMEOUT  = 100UL ;
 
 	// ”ñ“¯ŠúTS
@@ -119,13 +121,35 @@ void CBonTuner::Initialize()
 
 	AsyncTsCurStart = ASYNCTSQUEUESTART ;
 
-	// Ports
-	for(DWORD i=0;i<10;i++) {
-		DWORD dwPort = ( Type==SOCK_DGRAM ? 1234 : 2230 ) + i ;
-		wstring strName = Type==SOCK_DGRAM ? L"UDP Port:" : L"TCP Port:" ;
-		strName += itows(dwPort) ;
-		Ports.push_back(pair<DWORD,wstring>(dwPort, strName));
+	// Spaces
+	if(UDP) {
+		PORTS Ports;
+		for(DWORD i=0;i<10;i++) {
+			DWORD dwPort = 1234 + i ;
+			wstring strName = L"UDP Port:" + itows(dwPort) ;
+			Ports.push_back(pair<DWORD,wstring>(dwPort, strName));
+		}
+		Spaces.push_back(SPACE(IPV6?L"UDP IPv6":L"UDP",SOCX_UDP,Ports));
 	}
+	if(TCP) {
+		PORTS Ports;
+		for(DWORD i=0;i<10;i++) {
+			DWORD dwPort = 2230 + i ;
+			wstring strName = L"TCP Port:" + itows(dwPort) ;
+			Ports.push_back(pair<DWORD,wstring>(dwPort, strName));
+		}
+		Spaces.push_back(SPACE(IPV6?L"TCP IPv6":L"TCP",SOCX_TCP,Ports));
+	}
+
+	// TunerName
+	if(UDP&&TCP)
+		TunerName = L"UDP/TCP" ;
+	else if(UDP)
+		TunerName = L"UDP" ;
+	else if(TCP)
+		TunerName = L"TCP" ;
+	else
+		TunerName = L"(none)" ;
 
 	// TSIOƒLƒ…[
 	TSIOQueue.resize(TSIOQUEUENUM);
@@ -167,117 +191,119 @@ void CBonTuner::Finalize()
 //---------------------------------------------------------------------------
 void CBonTuner::LoadIni(string iniFileName)
 {
-  if(GetFileAttributesA(iniFileName.c_str())==-1) return ;
-  const DWORD BUFFER_SIZE = 1024;
-  char buffer[BUFFER_SIZE];
-  ZeroMemory(buffer, BUFFER_SIZE);
-  string Section;
+	if (GetFileAttributesA(iniFileName.c_str()) == -1)
+		return ;
+	const DWORD BUFFER_SIZE = 1024;
+	char buffer[BUFFER_SIZE];
+	ZeroMemory(buffer, BUFFER_SIZE);
+	string Section;
 
-  #define LOADSTR2(val,key) do { \
-	  GetPrivateProfileStringA(Section.c_str(),key,val.c_str(),buffer,BUFFER_SIZE,iniFileName.c_str()) ; \
-	  val = buffer ; \
-	}while(0)
-  #define LOADSTR(val) LOADSTR2(val,#val)
-  #define LOADWSTR(val) do { \
-	  string temp = wcs2mbcs(val) ; \
-	  LOADSTR2(temp,#val) ; val = mbcs2wcs(temp) ; \
-	}while(0)
+	#define LOADSTR2(val,key) do { \
+			GetPrivateProfileStringA(Section.c_str(),key,val.c_str(),buffer,BUFFER_SIZE,iniFileName.c_str()) ; \
+			val = buffer ; \
+			}while(0)
+	 #define LOADSTR(val) LOADSTR2(val,#val)
+	#define LOADWSTR(val) do { \
+			string temp = wcs2mbcs(val) ; \
+			LOADSTR2(temp,#val) ; val = mbcs2wcs(temp) ; \
+			}while(0)
 
-  #define LOADINT2(val,key,a2i) do { \
-	  GetPrivateProfileStringA(Section.c_str(),key,"",buffer,BUFFER_SIZE,iniFileName.c_str()) ; \
-	  val = a2i(buffer,val) ; \
-	}while(0)
-  #define LOADINT(val) LOADINT2(val,#val,acalci)
-  #define LOADINT64(val) LOADINT2(val,#val,acalci64)
+	#define LOADINT2(val,key,a2i) do { \
+			GetPrivateProfileStringA(Section.c_str(),key,"",buffer,BUFFER_SIZE,iniFileName.c_str()) ; \
+			val = a2i(buffer,val) ; \
+			}while(0)
+	 #define LOADINT(val) LOADINT2(val,#val,acalci)
+	 #define LOADINT64(val) LOADINT2(val,#val,acalci64)
 
-  #define LOADSTR_SEC(sec,val) do {\
-	  Section = #sec ; \
-	  LOADSTR2(sec##val,#val); \
-	}while(0)
-  #define LOADINT_SEC(sec,val) do {\
-	  Section = #sec ; \
-	  LOADINT2(sec##val,#val,acalci); \
-	}while(0)
-  #define LOADINT64_SEC(sec,val) do {\
-	  Section = #sec ; \
-	  LOADINT2(sec##val,#val,acalci64); \
-	}while(0)
+	#define LOADSTR_SEC(sec,val) do {\
+			Section = #sec ; \
+			LOADSTR2(sec##val,#val); \
+			}while(0)
+	#define LOADINT_SEC(sec,val) do {\
+			Section = #sec ; \
+			LOADINT2(sec##val,#val,acalci); \
+			}while(0)
+	#define LOADINT64_SEC(sec,val) do {\
+			Section = #sec ; \
+			LOADINT2(sec##val,#val,acalci64); \
+			}while(0)
 
-  Section = "SET" ;
-  LOADINT(Type);
-  LOADINT(IPV6);
+	Section = "SET" ;
+	LOADINT(UDP);
+	LOADINT(TCP);
+	LOADINT(IPV6);
 
-  LOADINT_SEC(TSIO,PACKETSIZE);
-  LOADINT_SEC(TSIO,QUEUENUM);
-  LOADINT_SEC(TSIO,POLLTIMEOUT);
+	LOADINT_SEC(TSIO, PACKETSIZE);
+	LOADINT_SEC(TSIO, QUEUENUM);
+	LOADINT_SEC(TSIO, POLLTIMEOUT);
 
-  LOADINT_SEC(ASYNCTS,PACKETSIZE);
-  LOADINT_SEC(ASYNCTS,QUEUENUM);
-  LOADINT_SEC(ASYNCTS,QUEUEMAX);
-  LOADINT_SEC(ASYNCTS,EMPTYBORDER);
-  LOADINT_SEC(ASYNCTS,EMPTYLIMIT);
-  //LOADINT_SEC(ASYNCTS,RECVTHREADWAIT);
-  LOADINT_SEC(ASYNCTS,RECVTHREADPRIORITY);
-  LOADINT_SEC(ASYNCTS,FIFOALLOCWAITING);
-  LOADINT_SEC(ASYNCTS,FIFOTHREADWAIT);
-  LOADINT_SEC(ASYNCTS,FIFOTHREADPRIORITY);
+	LOADINT_SEC(ASYNCTS, PACKETSIZE);
+	LOADINT_SEC(ASYNCTS, QUEUENUM);
+	LOADINT_SEC(ASYNCTS, QUEUEMAX);
+	LOADINT_SEC(ASYNCTS, EMPTYBORDER);
+	LOADINT_SEC(ASYNCTS, EMPTYLIMIT);
+	//LOADINT_SEC(ASYNCTS,RECVTHREADWAIT);
+	LOADINT_SEC(ASYNCTS, RECVTHREADPRIORITY);
+	LOADINT_SEC(ASYNCTS, FIFOALLOCWAITING);
+	LOADINT_SEC(ASYNCTS, FIFOTHREADWAIT);
+	LOADINT_SEC(ASYNCTS, FIFOTHREADPRIORITY);
 
-  #undef LOADINT64_SEC
-  #undef LOADINT_SEC
-  #undef LOADSTR_SEC
+	#undef LOADINT64_SEC
+	 #undef LOADINT_SEC
+	 #undef LOADSTR_SEC
 
-  #undef LOADINT64
-  #undef LOADINT
-  #undef LOADINT2
+	#undef LOADINT64
+	 #undef LOADINT
+	 #undef LOADINT2
 
-  #undef LOADSTR
-  #undef LOADWSTR
-  #undef LOADSTR2
+	#undef LOADSTR
+	 #undef LOADWSTR
+	 #undef LOADSTR2
 }
 //---------------------------------------------------------------------------
 BOOL CBonTuner::SocOpen(int port)
 {
-  addrinfo hints;
-  ZeroMemory(&hints, sizeof(hints)) ;
+	addrinfo hints;
+	ZeroMemory(&hints, sizeof(hints)) ;
 
-  hints.ai_flags = AI_PASSIVE;
-  hints.ai_family = IPV6 ? AF_INET6 : AF_INET ;
-  hints.ai_socktype = Type;
-  hints.ai_protocol = Type == SOCK_STREAM ? IPPROTO_TCP : IPPROTO_UDP ;
+	hints.ai_flags = AI_PASSIVE;
+	hints.ai_family = IPV6 ? AF_INET6 : AF_INET ;
+	hints.ai_socktype = SocType;
+	hints.ai_protocol = SocType == SOCK_STREAM ? IPPROTO_TCP : IPPROTO_UDP ;
 
-  string strPort = str_printf("%d", port) ;
+	string strPort = str_printf("%d", port) ;
 
-  addrinfo *ai;
-  if (getaddrinfo(NULL, strPort.c_str(), &hints, &ai) != 0) {
-    DBGOUT("getaddrinfo Failed: code=%d\n", WSAGetLastError());
-    return FALSE;
-  }
+	addrinfo *ai;
+	if (getaddrinfo(NULL, strPort.c_str(), &hints, &ai) != 0) {
+		DBGOUT("getaddrinfo Failed: code=%d\n", WSAGetLastError());
+		return FALSE;
+	}
 
-  Soc = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-  if (Soc == INVALID_SOCKET) {
-    freeaddrinfo(ai);
-    DBGOUT("Sock Open Failed: code=%d\n", WSAGetLastError()) ;
-    return FALSE;
-  }
+	Soc = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+	if (Soc == INVALID_SOCKET) {
+		freeaddrinfo(ai);
+		DBGOUT("Sock Open Failed: code=%d\n", WSAGetLastError()) ;
+		return FALSE;
+	}
 
-  if (Type == SOCK_STREAM) {
-    BOOL bReuseAddr = TRUE;
-    setsockopt(Soc, SOL_SOCKET, SO_REUSEADDR, (const char *)&bReuseAddr, sizeof(bReuseAddr)) ;
-  }
+	if (SocType == SOCK_STREAM) {
+		BOOL bReuseAddr = TRUE;
+		setsockopt(Soc, SOL_SOCKET, SO_REUSEADDR, (const char *)&bReuseAddr, sizeof(bReuseAddr)) ;
+	}
 
-  if (IPV6) {
-    BOOL bV6Only = FALSE;
-    setsockopt(Soc, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&bV6Only, sizeof(bV6Only)) ;
-  }
+	if (IPV6) {
+		BOOL bV6Only = FALSE;
+		setsockopt(Soc, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&bV6Only, sizeof(bV6Only)) ;
+	}
 
-  if (::bind(Soc, ai->ai_addr, (int)ai->ai_addrlen) == SOCKET_ERROR
-      || (Type == SOCK_STREAM && listen(Soc, 1) == SOCKET_ERROR)) {
-    DBGOUT("Bind Error: code=%d\n", WSAGetLastError()) ;
-    return FALSE;
-  }
-  freeaddrinfo(ai);
+	if (::bind(Soc, ai->ai_addr, (int)ai->ai_addrlen) == SOCKET_ERROR
+			|| (SocType == SOCK_STREAM && listen(Soc, 1) == SOCKET_ERROR)) {
+		DBGOUT("Bind Error: code=%d\n", WSAGetLastError()) ;
+		return FALSE;
+	}
+	freeaddrinfo(ai);
 
-  return TRUE;
+	return TRUE;
 }
 //---------------------------------------------------------------------------
 void CBonTuner::SocClose()
@@ -325,14 +351,14 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 	const bool alloc_waiting = ASYNCTSFIFOALLOCWAITING ? true : false ;
 
 	event_object evAccept ;
-	if (Type == SOCK_STREAM)
+	if (SocType == SOCK_STREAM)
 		WSAEventSelect(Soc, evAccept.handle(), FD_ACCEPT);
 
 	int si = 0, ri = 0 ; // submitting index, reaping index
 	int num_submit = 0 ; // number of submitting
 
 	int tcp_stride = 0 ;  // tcp header stride
-    union {
+	union {
 		struct {
 			DWORD dummy ;
 			DWORD sz ;
@@ -360,8 +386,8 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 
 	while (!terminated) {
 
-		// waiting tcp connection
-		if ( Type == SOCK_STREAM && evAccept.wait(0) == WAIT_OBJECT_0 ) {
+		// waiting for tcp connection
+		if ( SocType == SOCK_STREAM && evAccept.wait(0) == WAIT_OBJECT_0 ) {
 			WSANETWORKEVENTS events;
 			if (WSAEnumNetworkEvents(Soc, evAccept.handle(), &events) != SOCKET_ERROR &&
 			        (events.lNetworkEvents & FD_ACCEPT)) {
@@ -378,7 +404,7 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 			}
 		}
 
-		auto soc = Type == SOCK_STREAM ? TcpSoc : Soc ;
+		auto soc = SocType == SOCK_STREAM ? TcpSoc : Soc ;
 
 		if ( soc == INVALID_SOCKET ) {
 			Sleep(TSIOPOLLTIMEOUT);
@@ -421,14 +447,14 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 							break;
 						else {
 							soc = INVALID_SOCKET ;
-							DBGOUT("WSAGetOverlappedResult failed (%d)\n",sock_err) ;
+							DBGOUT("WSAGetOverlappedResult failed: code=%d\n",sock_err) ;
 							break ;
 						}
 					}
 					q.RxSz = rx_sz ;
 				}
 				if(rx_sz>0) {
-					if(Type==SOCK_STREAM) {
+					if(SocType==SOCK_STREAM) {
 						for(DWORD i=0;i<rx_sz;) {
 							if(tcp_stride<0) {
 								tcp_header.bin[tcp_stride++ + 8] = q.Buff[i++] ;
@@ -473,7 +499,7 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 					int sock_err = WSAGetLastError();
 					if (sock_err != ERROR_IO_PENDING) {
 						soc = INVALID_SOCKET ;
-						DBGOUT("WSARecv failed (%d)\n",sock_err) ;
+						DBGOUT("WSARecv failed: code=%d\n",sock_err) ;
 						break ;
 					}
 				}
@@ -485,7 +511,7 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 
 		// socket error
 		if ( soc == INVALID_SOCKET) {
-			if (Type == SOCK_STREAM) {
+			if (SocType == SOCK_STREAM) {
 				closesocket(TcpSoc);
 				TcpSoc = INVALID_SOCKET;
 				reset_queue();
@@ -545,7 +571,7 @@ const DWORD CBonTuner::WaitTsStream(const DWORD dwTimeOut)
 	if(!AsyncTsFifo) return WAIT_ABANDONED;
 
 	if(!AsyncTsFifo->Empty()) return WAIT_OBJECT_0;
-    if(AsyncTsThread==INVALID_HANDLE_VALUE) return WAIT_ABANDONED;
+	if(AsyncTsThread==INVALID_HANDLE_VALUE) return WAIT_ABANDONED;
 
 	const DWORD dwRet = TsStreamEvent.wait(dwTimeOut);
 
@@ -618,9 +644,7 @@ void CBonTuner::PurgeTsStream(void)
 //---------------------------------------------------------------------------
 LPCTSTR CBonTuner::GetTunerName(void)
 {
-	if(Type == SOCK_STREAM) return L"TCP";
-	else if(Type == SOCK_DGRAM) return L"UDP";
-	return L"(none)" ;
+	return TunerName.c_str() ;
 }
 //---------------------------------------------------------------------------
 const BOOL CBonTuner::IsTunerOpening(void)
@@ -630,36 +654,45 @@ const BOOL CBonTuner::IsTunerOpening(void)
 //---------------------------------------------------------------------------
 LPCTSTR CBonTuner::EnumTuningSpace(const DWORD dwSpace)
 {
-	if(dwSpace==0) return GetTunerName() ;
+	if(dwSpace<DWORD(Spaces.size()))
+		return Spaces[dwSpace].Name.c_str() ;
 	return NULL;
 }
 //---------------------------------------------------------------------------
 LPCTSTR CBonTuner::EnumChannelName(const DWORD dwSpace, const DWORD dwChannel)
 {
-	if(dwSpace==0) {
-		if(dwChannel<DWORD(Ports.size())) {
+	if(dwSpace<DWORD(Spaces.size())) {
+		const PORTS &Ports = Spaces[dwSpace].Ports ;
+		if(dwChannel<DWORD(Ports.size()))
 			return Ports[dwChannel].second.c_str();
-		}
 	}
 	return NULL;
 }
 //---------------------------------------------------------------------------
 const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 {
-	if(dwSpace!=0) return FALSE ;
-	if(dwChannel>=Ports.size()) return FALSE ;
-	if(CurChannel==dwChannel) return TRUE ;
+	if(dwSpace>=DWORD(Spaces.size())) return FALSE ;
+	const SPACE &Space = Spaces[dwSpace] ;
+	if(dwChannel>=Space.Ports.size()) return FALSE ;
+	if(CurSpace==dwSpace&&CurChannel==dwChannel) return TRUE ;
 
 	StopAsyncTsThread();
-	SocClose() ;
+	SocClose();
 	CurChannel = 0xFFFFFFFF ;
+	CurSpace = 0xFFFFFFFF ;
 
-	if(!SocOpen(Ports[dwChannel].first)) {
+	if(Space.Type == SOCX_UDP)
+		SocType = SOCK_DGRAM ;
+	else if(Space.Type == SOCX_TCP)
+		SocType = SOCK_STREAM ;
+
+	if(!SocOpen(Space.Ports[dwChannel].first)) {
 		SocClose();
 		return FALSE ;
 	}
 
 	PurgeTsStream();
+	CurSpace = dwSpace ;
 	CurChannel = dwChannel ;
 	StartAsyncTsThread();
 
@@ -668,7 +701,7 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 //---------------------------------------------------------------------------
 const DWORD CBonTuner::GetCurSpace(void)
 {
-	return 0;
+	return CurSpace;
 }
 //---------------------------------------------------------------------------
 const DWORD CBonTuner::GetCurChannel(void)
