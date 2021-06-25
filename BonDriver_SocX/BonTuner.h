@@ -22,10 +22,11 @@ protected:
 		BUFFER<BYTE> Buff;
 		int Stat ;
 		DWORD RxSz ;
+		void *Context ;
 	};
 	using TSIOQUEUE = std::vector<TSIO> ;
 	using TSIOEVENTS = BUFFER<HANDLE> ;
-    using PORTS = std::vector<std::pair<DWORD,std::wstring>> ;
+    using PORTS = std::vector<std::pair<std::string/*port*/,std::wstring/*name*/>> ;
 	struct SPACE {
 		std::wstring Name;
 		SOCXTYPE Type;
@@ -57,11 +58,13 @@ protected: // settings
 	BOOL IPV6;
 	BOOL UDP;
 	BOOL TCP;
+	std::string HOSTNAME;
+	std::string UDPPORTS, TCPPORTS;
 
 	// TSIO
 	DWORD TSIOPACKETSIZE ;
 	DWORD TSIOQUEUENUM ;
-	DWORD TSIOPOLLTIMEOUT ;
+	DWORD TSIOQUEUEMIN ;
 
 	// ”ñ“¯ŠúTS
 	DWORD ASYNCTSPACKETSIZE;
@@ -70,7 +73,7 @@ protected: // settings
 	DWORD ASYNCTSQUEUESTART;
 	DWORD ASYNCTSEMPTYBORDER;
 	DWORD ASYNCTSEMPTYLIMIT;
-	//DWORD ASYNCTSRECVTHREADWAIT;
+	DWORD ASYNCTSRECVTHREADWAIT;
 	int   ASYNCTSRECVTHREADPRIORITY;
 	BOOL  ASYNCTSFIFOALLOCWAITING;
 	DWORD ASYNCTSFIFOTHREADWAIT;
@@ -79,8 +82,8 @@ protected: // settings
 protected:
 	void Initialize();
 	void Finalize();
-	void LoadIni(std::string iniFileName);
-	BOOL SocOpen(int port);
+	void LoadIni(const std::string &iniFileName);
+	BOOL SocOpen(const std::string &strHost, const std::string &strPort);
 	void SocClose();
 
 protected: // AsyncTsThread

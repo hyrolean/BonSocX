@@ -11,7 +11,7 @@ using namespace std;
 HMODULE DllModule = NULL ;
 CBonTuner *BonTuner = NULL ;
 
-//#define STRICTLY_CHECK_EVENT_SIGNALS
+#define STRICTLY_CHECK_EVENT_SIGNALS
 //===========================================================================
 // Static Functions
 //---------------------------------------------------------------------------
@@ -48,7 +48,6 @@ CBonTuner::CBonTuner()
 {
 	AsyncTsFifo = NULL ;
 	SocType = SOCK_DGRAM ;
-	IPV6 = FALSE ;
 	TcpSoc=Soc=INVALID_SOCKET;
 	CurSpace=CurChannel=0xFFFFFFFF;
 	TunerOpened=FALSE;
@@ -76,7 +75,7 @@ void CBonTuner::Initialize()
 	string mfname = ModuleFileName();
 	string prefix = upper_case(file_prefix_of(mfname));
 
-	// initialize variables
+	// initialize variabl// MARK :  es
 	if(prefix=="BONDRIVER_TCP") {
 		TCP = TRUE ; UDP = FALSE ;
 	}else if(prefix=="BONDRIVER_UDP") {
@@ -84,13 +83,18 @@ void CBonTuner::Initialize()
 	}else {
 	    UDP = TCP = TRUE ;
 	}
+	IPV6 = FALSE ;
+	HOSTNAME = "" ;
+	UDPPORTS = "1234,1235,1236,1237,1238,1239,1240,1241,1242,1243" ;
+	TCPPORTS = "2230,2231,2232,2233,2234,2235,2236,2237,2238,2239" ;
 	AsyncTsThread = INVALID_HANDLE_VALUE ;
 	AsyncTsTerm = FALSE ;
 
+
 	// TSIO
 	TSIOPACKETSIZE   = def_packet_size ;
-	TSIOQUEUENUM     = 10UL ;
-	TSIOPOLLTIMEOUT  = 100UL ;
+	TSIOQUEUENUM     = 24 ;
+	TSIOQUEUEMIN     = 4 ;
 
 	// 非同期TS
 	ASYNCTSPACKETSIZE         = def_packet_size         ; // 非同期TSデータのパケットサイズ
@@ -99,12 +103,11 @@ void CBonTuner::Initialize()
 	ASYNCTSQUEUESTART         = 10UL                    ; // 非同期TSデータの初期バッファ充填数
 	ASYNCTSEMPTYBORDER        = 22UL                    ; // 非同期TSデータの空きストック数底値閾値(アロケーション開始閾値)
 	ASYNCTSEMPTYLIMIT         = 11UL                    ; // 非同期TSデータの最低限確保する空きストック数(オーバーラップからの保障)
-	//ASYNCTSRECVTHREADWAIT     = 250UL                   ; // 非同期TSスレッドキュー毎に待つ最大時間
+	ASYNCTSRECVTHREADWAIT     = 50UL                    ; // 非同期TSスレッドキュー毎に待つ最大時間
 	ASYNCTSRECVTHREADPRIORITY = THREAD_PRIORITY_HIGHEST ; // 非同期TSスレッドの優先度
 	ASYNCTSFIFOALLOCWAITING   = FALSE                   ; // 非同期TSデータのアロケーションの完了を待つかどうか
 	ASYNCTSFIFOTHREADWAIT     = 1000UL                  ; // 非同期TSデータのアロケーションの監視毎時間
 	ASYNCTSFIFOTHREADPRIORITY = THREAD_PRIORITY_HIGHEST ; // 非同期TSアロケーションスレッドの優先度
-
 
 	#define ACALCI_ENTRY_CONST(name) do { \
 		acalci_entry_const(#name,(int)name); \
@@ -124,21 +127,23 @@ void CBonTuner::Initialize()
 	// Spaces
 	if(UDP) {
 		PORTS Ports;
-		for(DWORD i=0;i<10;i++) {
-			DWORD dwPort = 1234 + i ;
-			wstring strName = L"UDP Port:" + itows(dwPort) ;
-			Ports.push_back(pair<DWORD,wstring>(dwPort, strName));
+		vector<string> port_list;
+		split(port_list,UDPPORTS,',');
+		for(auto port : port_list) {
+			wstring strName = L"UDP Port:" + mbcs2wcs(port) ;
+			Ports.push_back(make_pair(port,strName)) ;
 		}
 		Spaces.push_back(SPACE(IPV6?L"UDP IPv6":L"UDP",SOCX_UDP,Ports));
 	}
 	if(TCP) {
 		PORTS Ports;
-		for(DWORD i=0;i<10;i++) {
-			DWORD dwPort = 2230 + i ;
-			wstring strName = L"TCP Port:" + itows(dwPort) ;
-			Ports.push_back(pair<DWORD,wstring>(dwPort, strName));
+		vector<string> port_list;
+		split(port_list,TCPPORTS,',');
+		for(auto port : port_list) {
+			wstring strName = L"TCP Port:" + mbcs2wcs(port) ;
+			Ports.push_back(make_pair(port,strName)) ;
 		}
-		Spaces.push_back(SPACE(IPV6?L"TCP IPv6":L"TCP",SOCX_TCP,Ports));
+		Spaces.push_back(SPACE(IPV6?L"TCP IPv6":L"UDP",SOCX_TCP,Ports));
 	}
 
 	// TunerName
@@ -156,8 +161,8 @@ void CBonTuner::Initialize()
 	for(auto &v : TSIOQueue) {
 		ZeroMemory(&v.Ovl,sizeof v.Ovl) ;
 		v.Ovl.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL) ;
-		v.Buff.resize(TSIOPACKETSIZE) ;
 		v.Stat = 0 ;
+		v.Context = nullptr ;
 	}
 
 	// TSIOイベント
@@ -189,7 +194,7 @@ void CBonTuner::Finalize()
 	TSIOQueue.clear();
 }
 //---------------------------------------------------------------------------
-void CBonTuner::LoadIni(string iniFileName)
+void CBonTuner::LoadIni(const string &iniFileName)
 {
 	if (GetFileAttributesA(iniFileName.c_str()) == -1)
 		return ;
@@ -233,16 +238,20 @@ void CBonTuner::LoadIni(string iniFileName)
 	LOADINT(TCP);
 	LOADINT(IPV6);
 
+	LOADSTR(HOSTNAME);
+	LOADSTR(TCPPORTS);
+	LOADSTR(UDPPORTS);
+
 	LOADINT_SEC(TSIO, PACKETSIZE);
 	LOADINT_SEC(TSIO, QUEUENUM);
-	LOADINT_SEC(TSIO, POLLTIMEOUT);
+	LOADINT_SEC(TSIO, QUEUEMIN);
 
 	LOADINT_SEC(ASYNCTS, PACKETSIZE);
 	LOADINT_SEC(ASYNCTS, QUEUENUM);
 	LOADINT_SEC(ASYNCTS, QUEUEMAX);
 	LOADINT_SEC(ASYNCTS, EMPTYBORDER);
 	LOADINT_SEC(ASYNCTS, EMPTYLIMIT);
-	//LOADINT_SEC(ASYNCTS,RECVTHREADWAIT);
+	LOADINT_SEC(ASYNCTS,RECVTHREADWAIT);
 	LOADINT_SEC(ASYNCTS, RECVTHREADPRIORITY);
 	LOADINT_SEC(ASYNCTS, FIFOALLOCWAITING);
 	LOADINT_SEC(ASYNCTS, FIFOTHREADWAIT);
@@ -261,7 +270,7 @@ void CBonTuner::LoadIni(string iniFileName)
 	 #undef LOADSTR2
 }
 //---------------------------------------------------------------------------
-BOOL CBonTuner::SocOpen(int port)
+BOOL CBonTuner::SocOpen(const string &strHost, const string &strPort)
 {
 	addrinfo hints;
 	ZeroMemory(&hints, sizeof(hints)) ;
@@ -271,10 +280,8 @@ BOOL CBonTuner::SocOpen(int port)
 	hints.ai_socktype = SocType;
 	hints.ai_protocol = SocType == SOCK_STREAM ? IPPROTO_TCP : IPPROTO_UDP ;
 
-	string strPort = str_printf("%d", port) ;
-
 	addrinfo *ai;
-	if (getaddrinfo(NULL, strPort.c_str(), &hints, &ai) != 0) {
+	if (getaddrinfo(strHost==""?NULL:strHost.c_str(), strPort.c_str(), &hints, &ai) != 0) {
 		DBGOUT("getaddrinfo Failed: code=%d\n", WSAGetLastError());
 		return FALSE;
 	}
@@ -369,13 +376,23 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 	const int STAT_BUSY = 1 ;
 	const int STAT_EMPTY = 0 ;
 
-	for (auto &v : TSIOQueue)
+	for (auto &v : TSIOQueue) {
 		v.Stat = STAT_EMPTY ;
+		v.Context = nullptr ;
+	}
+
+	bool write_back = UDP && TSIOPACKETSIZE == ASYNCTSPACKETSIZE ;
 
 	auto reset_queue = [&]() {
 		for(auto &q : TSIOQueue) {
 			if(q.Stat == STAT_BUSY) {
 				WaitForSingleObject(q.Ovl.hEvent, INFINITE);
+				if(write_back&&q.Context) {
+					auto cache = static_cast<CAsyncFifo::CACHE*>(q.Context);
+					cache->resize(0);
+					AsyncTsFifo->FinishWriteBack(cache);
+					q.Context = nullptr ;
+				}
 				q.Stat = STAT_EMPTY ;
 			}
 		}
@@ -407,7 +424,7 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 		auto soc = SocType == SOCK_STREAM ? TcpSoc : Soc ;
 
 		if ( soc == INVALID_SOCKET ) {
-			Sleep(TSIOPOLLTIMEOUT);
+			Sleep(ASYNCTSRECVTHREADWAIT);
 			continue;
 		}
 
@@ -415,7 +432,7 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 		int next_wait_index=-1 ;
 		if(num_submit>0) {
 			int max_wait_count = num_submit<MAXIMUM_WAIT_OBJECTS ? num_submit : MAXIMUM_WAIT_OBJECTS ;
-			DWORD dRet = WaitForMultipleObjects(max_wait_count, &TSIOEvents[ri] , FALSE, TSIOPOLLTIMEOUT );
+			DWORD dRet = WaitForMultipleObjects(max_wait_count, &TSIOEvents[ri] , FALSE, ASYNCTSRECVTHREADWAIT );
 			if(WAIT_OBJECT_0 <= dRet&&dRet < WAIT_OBJECT_0+max_wait_count) {
 				next_wait_index = ((dRet - WAIT_OBJECT_0)+1 + ri) % TSIOQUEUENUM ;
 #ifdef STRICTLY_CHECK_EVENT_SIGNALS
@@ -431,6 +448,8 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 				soc=INVALID_SOCKET;
 			}
 		}
+
+		DWORD s = Elapsed() ;
 
 		// reaping
 		if ( soc != INVALID_SOCKET) {
@@ -453,23 +472,29 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 					}
 					q.RxSz = rx_sz ;
 				}
-				if(rx_sz>0) {
-					if(SocType==SOCK_STREAM) {
-						for(DWORD i=0;i<rx_sz;) {
-							if(tcp_stride<0) {
-								tcp_header.bin[tcp_stride++ + 8] = q.Buff[i++] ;
-								if(!tcp_stride)
-									tcp_stride = tcp_header.sz ;
-							}else {
-								DWORD sz = min<DWORD>(tcp_stride,rx_sz-i);
-								if(AsyncTsFifo->Push(&q.Buff[i],sz,false,alloc_waiting))
-									TsStreamEvent.set();
-								tcp_stride-=sz;
-								if(!tcp_stride)
-									tcp_stride = -8 ;
-								i+=sz ;
-							}
+				if(SocType==SOCK_STREAM) {
+					for(DWORD i=0;i<rx_sz;) {
+						if(tcp_stride<0) {
+							tcp_header.bin[tcp_stride++ + 8] = q.Buff[i++] ;
+							if(!tcp_stride)
+								tcp_stride = tcp_header.sz ;
+						}else {
+							DWORD sz = min<DWORD>(tcp_stride,rx_sz-i);
+							if(AsyncTsFifo->Push(&q.Buff[i],sz,false,alloc_waiting))
+								TsStreamEvent.set();
+							tcp_stride-=sz;
+							if(!tcp_stride)
+								tcp_stride = -8 ;
+							i+=sz ;
 						}
+					}
+				}else {
+					if(write_back) {
+						auto cache = static_cast<CAsyncFifo::CACHE*>(q.Context);
+						cache->resize(rx_sz);
+						if(AsyncTsFifo->FinishWriteBack(cache))
+							TsStreamEvent.set();
+						q.Context = nullptr ;
 					}else {
 						if(AsyncTsFifo->Push(q.Buff.data(),rx_sz,false,alloc_waiting))
 							TsStreamEvent.set();
@@ -487,13 +512,25 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 				auto &q = TSIOQueue[si] ;
 				if (q.Stat != STAT_EMPTY)
 					break;
+				if (num_submit>=(int)TSIOQUEUEMIN&&Elapsed(s)>=ASYNCTSRECVTHREADWAIT)
+					break;
 				ZeroMemory(&q.Ovl, sizeof q.Ovl) ;
 				q.Ovl.hEvent = TSIOEvents[si] ;
 				ResetEvent(q.Ovl.hEvent);
 				DWORD Flags = 0;
 				WSABUF wsaBuf;
-				wsaBuf.buf = (char*)q.Buff.data() ;
-				wsaBuf.len = (ULONG)q.Buff.size() ;
+				if(write_back) {
+					auto cache = AsyncTsFifo->BeginWriteBack(alloc_waiting);
+					if(!cache) break ;
+					cache->resize(TSIOPACKETSIZE);
+					wsaBuf.buf = (char*)cache->data() ;
+					wsaBuf.len = (ULONG)cache->size() ;
+					q.Context = cache ;
+				}else {
+					q.Buff.resize(TSIOPACKETSIZE) ;
+					wsaBuf.buf = (char*)q.Buff.data() ;
+					wsaBuf.len = (ULONG)q.Buff.size() ;
+				}
 				q.RxSz = 0 ;
 				if (SOCKET_ERROR == WSARecv(soc, &wsaBuf, 1, &q.RxSz, &Flags, &q.Ovl, NULL)) {
 					int sock_err = WSAGetLastError();
@@ -686,7 +723,7 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 	else if(Space.Type == SOCX_TCP)
 		SocType = SOCK_STREAM ;
 
-	if(!SocOpen(Space.Ports[dwChannel].first)) {
+	if(!SocOpen(HOSTNAME,Space.Ports[dwChannel].first)) {
 		SocClose();
 		return FALSE ;
 	}
