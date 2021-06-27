@@ -75,7 +75,7 @@ void CBonTuner::Initialize()
 	string mfname = ModuleFileName();
 	string prefix = upper_case(file_prefix_of(mfname));
 
-	// initialize variabl// MARK :  es
+	// initialize variables
 	if(prefix=="BONDRIVER_TCP") {
 		TCP = TRUE ; UDP = FALSE ;
 	}else if(prefix=="BONDRIVER_UDP") {
@@ -143,7 +143,7 @@ void CBonTuner::Initialize()
 			wstring strName = L"TCP Port:" + mbcs2wcs(port) ;
 			Ports.push_back(make_pair(port,strName)) ;
 		}
-		Spaces.push_back(SPACE(IPV6?L"TCP IPv6":L"UDP",SOCX_TCP,Ports));
+		Spaces.push_back(SPACE(IPV6?L"TCP IPv6":L"TCP",SOCX_TCP,Ports));
 	}
 
 	// TunerName
@@ -251,7 +251,7 @@ void CBonTuner::LoadIni(const string &iniFileName)
 	LOADINT_SEC(ASYNCTS, QUEUEMAX);
 	LOADINT_SEC(ASYNCTS, EMPTYBORDER);
 	LOADINT_SEC(ASYNCTS, EMPTYLIMIT);
-	LOADINT_SEC(ASYNCTS,RECVTHREADWAIT);
+	LOADINT_SEC(ASYNCTS, RECVTHREADWAIT);
 	LOADINT_SEC(ASYNCTS, RECVTHREADPRIORITY);
 	LOADINT_SEC(ASYNCTS, FIFOALLOCWAITING);
 	LOADINT_SEC(ASYNCTS, FIFOTHREADWAIT);
