@@ -327,7 +327,6 @@ void CBonTuner::SocClose()
 //---------------------------------------------------------------------------
 void CBonTuner::StartAsyncTsThread()
 {
-	if(!AsyncTsFifo||Soc==INVALID_SOCKET) return;
 	auto &Thread = AsyncTsThread;
 	if(Thread != INVALID_HANDLE_VALUE) return /*active*/;
 	Thread = (HANDLE)_beginthreadex(NULL, 0, AsyncTsThreadProc, this,
@@ -341,7 +340,6 @@ void CBonTuner::StartAsyncTsThread()
 //---------------------------------------------------------------------------
 void CBonTuner::StopAsyncTsThread()
 {
-	if(!AsyncTsFifo||Soc==INVALID_SOCKET) return;
 	auto &Thread = AsyncTsThread;
 	if(Thread == INVALID_HANDLE_VALUE) return /*inactive*/;
 	AsyncTsTerm=TRUE;
@@ -381,7 +379,7 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 		v.Context = nullptr ;
 	}
 
-	bool write_back = UDP && TSIOPACKETSIZE == ASYNCTSPACKETSIZE ;
+	bool write_back = SocType == SOCK_DGRAM && TSIOPACKETSIZE == ASYNCTSPACKETSIZE ;
 
 	auto reset_queue = [&]() {
 		for(auto &q : TSIOQueue) {
@@ -428,11 +426,14 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 			continue;
 		}
 
+		DWORD s = Elapsed() ;
+
 		// polling
 		int next_wait_index=-1 ;
 		if(num_submit>0) {
 			int max_wait_count = num_submit<MAXIMUM_WAIT_OBJECTS ? num_submit : MAXIMUM_WAIT_OBJECTS ;
-			DWORD dRet = WaitForMultipleObjects(max_wait_count, &TSIOEvents[ri] , FALSE, ASYNCTSRECVTHREADWAIT );
+			DWORD dRet = WaitForMultipleObjects(max_wait_count, &TSIOEvents[ri] , FALSE,
+				TSIOQueue[si].Stat==STAT_EMPTY ? 0 : ASYNCTSRECVTHREADWAIT );
 			if(WAIT_OBJECT_0 <= dRet&&dRet < WAIT_OBJECT_0+max_wait_count) {
 				next_wait_index = ((dRet - WAIT_OBJECT_0)+1 + ri) % TSIOQUEUENUM ;
 #ifdef STRICTLY_CHECK_EVENT_SIGNALS
@@ -449,8 +450,6 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 			}
 		}
 
-		DWORD s = Elapsed() ;
-
 		// reaping
 		if ( soc != INVALID_SOCKET) {
 			if(next_wait_index>=0) do {
@@ -460,7 +459,7 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 				if(!rx_sz) {
 					DWORD Flags = 0;
 					BOOL bRet = ::WSAGetOverlappedResult(soc, &q.Ovl, &rx_sz, FALSE, &Flags);
-				    if(!bRet) {
+					if(!bRet) {
 						int sock_err = WSAGetLastError();
 						if(sock_err == ERROR_IO_INCOMPLETE)
 							break;
@@ -708,6 +707,7 @@ LPCTSTR CBonTuner::EnumChannelName(const DWORD dwSpace, const DWORD dwChannel)
 //---------------------------------------------------------------------------
 const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 {
+	if(!TunerOpened||!AsyncTsFifo) return FALSE ;
 	if(dwSpace>=DWORD(Spaces.size())) return FALSE ;
 	const SPACE &Space = Spaces[dwSpace] ;
 	if(dwChannel>=Space.Ports.size()) return FALSE ;
@@ -723,12 +723,13 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 	else if(Space.Type == SOCX_TCP)
 		SocType = SOCK_STREAM ;
 
+	AsyncTsFifo->Purge(true) ;
+
 	if(!SocOpen(HOSTNAME,Space.Ports[dwChannel].first)) {
 		SocClose();
 		return FALSE ;
 	}
 
-	PurgeTsStream();
 	CurSpace = dwSpace ;
 	CurChannel = dwChannel ;
 	StartAsyncTsThread();
