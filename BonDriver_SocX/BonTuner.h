@@ -43,6 +43,7 @@ private:
 	TSIOEVENTS TSIOEvents;
 	CAsyncFifo *AsyncTsFifo;
 	event_object TsStreamEvent;
+	exclusive_object ChExclusive;
 	std::wstring TunerName;
 	SPACES Spaces;
     int SocType; // SOCK_STREAM / SOCK_DGRAM
@@ -63,6 +64,7 @@ protected: // settings
 
 	// TSIO
 	DWORD TSIOPACKETSIZE ;
+	DWORD TSIOMAXALIVE ;
 	DWORD TSIOQUEUENUM ;
 	DWORD TSIOQUEUEMIN ;
 

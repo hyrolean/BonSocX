@@ -93,6 +93,7 @@ void CBonTuner::Initialize()
 
 	// TSIO
 	TSIOPACKETSIZE   = def_packet_size ;
+	TSIOMAXALIVE     = 5000 ;
 	TSIOQUEUENUM     = 24 ;
 	TSIOQUEUEMIN     = 4 ;
 
@@ -243,6 +244,7 @@ void CBonTuner::LoadIni(const string &iniFileName)
 	LOADSTR(UDPPORTS);
 
 	LOADINT_SEC(TSIO, PACKETSIZE);
+	LOADINT_SEC(TSIO, MAXALIVE);
 	LOADINT_SEC(TSIO, QUEUENUM);
 	LOADINT_SEC(TSIO, QUEUEMIN);
 
@@ -303,8 +305,9 @@ BOOL CBonTuner::SocOpen(const string &strHost, const string &strPort)
 		setsockopt(Soc, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&bV6Only, sizeof(bV6Only)) ;
 	}
 
-	if (::bind(Soc, ai->ai_addr, (int)ai->ai_addrlen) == SOCKET_ERROR
-			|| (SocType == SOCK_STREAM && listen(Soc, 1) == SOCKET_ERROR)) {
+	if (::bind(Soc, ai->ai_addr, (int)ai->ai_addrlen) == SOCKET_ERROR ||
+			(SocType == SOCK_STREAM && listen(Soc, 1) == SOCKET_ERROR)) {
+		freeaddrinfo(ai);
 		DBGOUT("Bind Error: code=%d\n", WSAGetLastError()) ;
 		return FALSE;
 	}
@@ -355,9 +358,10 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 	BOOL &terminated = AsyncTsTerm ;
 	const bool alloc_waiting = ASYNCTSFIFOALLOCWAITING ? true : false ;
 
-	event_object evAccept ;
-	if (SocType == SOCK_STREAM)
+	event_object evAccept(FALSE) ;
+	if (SocType == SOCK_STREAM) {
 		WSAEventSelect(Soc, evAccept.handle(), FD_ACCEPT);
+	}
 
 	int si = 0, ri = 0 ; // submitting index, reaping index
 	int num_submit = 0 ; // number of submitting
@@ -394,28 +398,37 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 				q.Stat = STAT_EMPTY ;
 			}
 		}
+		ri=si;
+		num_submit=tcp_stride=0;
 		AsyncTsFifo->Purge();
 		TsStreamEvent.set() ;
 	};
 
+	DWORD lastAlive = Elapsed();
 
 	while (!terminated) {
 
 		// waiting for tcp connection
 		if ( SocType == SOCK_STREAM && evAccept.wait(0) == WAIT_OBJECT_0 ) {
 			WSANETWORKEVENTS events;
-			if (WSAEnumNetworkEvents(Soc, evAccept.handle(), &events) != SOCKET_ERROR &&
-			        (events.lNetworkEvents & FD_ACCEPT)) {
-				SOCKET clisoc = accept(Soc, NULL, NULL);
-				if (clisoc != INVALID_SOCKET) {
-					WSAEventSelect(clisoc, NULL, 0);
-					if (TcpSoc != INVALID_SOCKET) {
-						closesocket(clisoc);
-					} else {
-						TcpSoc = clisoc;
-						tcp_stride = -8 ;
+			ZeroMemory(&events,sizeof(events));
+			if (WSAEnumNetworkEvents(Soc, evAccept.handle(), &events) != SOCKET_ERROR) {
+				if (events.lNetworkEvents & FD_ACCEPT) {
+					SOCKET clisoc = accept(Soc, NULL, NULL);
+					if (clisoc != INVALID_SOCKET) {
+						WSAEventSelect(clisoc, NULL, 0);
+						if (TcpSoc != INVALID_SOCKET) {
+							closesocket(clisoc);
+						}else {
+							TcpSoc = clisoc;
+							tcp_stride = -8 ;
+							lastAlive = Elapsed();
+						}
 					}
 				}
+			}else {
+				int sock_err = WSAGetLastError();
+				DBGOUT("WSAEnumNetworkEvents failed: code=%d\n",sock_err) ;
 			}
 		}
 
@@ -447,7 +460,8 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 #endif
 			}else if(WAIT_TIMEOUT!=dRet) {
 				soc=INVALID_SOCKET;
-			}
+			}else if(SocType==SOCK_STREAM)
+				next_wait_index = (ri+1) % TSIOQUEUENUM ;
 		}
 
 		// reaping
@@ -466,11 +480,12 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 						else {
 							soc = INVALID_SOCKET ;
 							DBGOUT("WSAGetOverlappedResult failed: code=%d\n",sock_err) ;
-							break ;
+							break;
 						}
 					}
 					q.RxSz = rx_sz ;
 				}
+				if(rx_sz>0) lastAlive = Elapsed();
 				if(SocType==SOCK_STREAM) {
 					for(DWORD i=0;i<rx_sz;) {
 						if(tcp_stride<0) {
@@ -538,12 +553,17 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 						DBGOUT("WSARecv failed: code=%d\n",sock_err) ;
 						break ;
 					}
+				}else {
+					SetEvent(q.Ovl.hEvent);
 				}
 				q.Stat = STAT_BUSY ;
 				si = ( si + 1 >= (int)TSIOQUEUENUM ) ? 0 : si + 1 ;
 				num_submit++;
 			}
 		}
+
+		if(SocType!=SOCK_DGRAM && Elapsed(lastAlive)>=TSIOMAXALIVE)
+			soc = INVALID_SOCKET ;
 
 		// socket error
 		if ( soc == INVALID_SOCKET) {
@@ -556,6 +576,9 @@ unsigned int CBonTuner::AsyncTsThreadProcMain()
 		}
 
 	}
+
+	if (SocType == SOCK_STREAM)
+		WSAEventSelect(Soc, evAccept.handle(), 0);
 
 	SocClose();
 	reset_queue();
@@ -573,9 +596,7 @@ unsigned int __stdcall CBonTuner::AsyncTsThreadProc (PVOID pv)
 const BOOL CBonTuner::OpenTuner(void)
 {
 	CloseTuner();
-	if(!TunerOpened) {
-		if(!WinSockInitialize())
-			return FALSE ;
+	if(!TunerOpened&&!Spaces.empty()) {
 		TunerOpened=TRUE;
 		return TRUE;
 	}
@@ -588,6 +609,7 @@ void CBonTuner::CloseTuner(void)
 		StopAsyncTsThread();
 		SocClose();
 		WinSockFinalize();
+		CurSpace=CurChannel=0xFFFFFFFF;
 		TunerOpened=FALSE;
 	}
 }
@@ -606,7 +628,7 @@ const DWORD CBonTuner::WaitTsStream(const DWORD dwTimeOut)
 {
 	if(!AsyncTsFifo) return WAIT_ABANDONED;
 
-	if(!AsyncTsFifo->Empty()) return WAIT_OBJECT_0;
+	if(AsyncTsFifo->Size()>AsyncTsCurStart) return WAIT_OBJECT_0;
 	if(AsyncTsThread==INVALID_HANDLE_VALUE) return WAIT_ABANDONED;
 
 	const DWORD dwRet = TsStreamEvent.wait(dwTimeOut);
@@ -616,6 +638,8 @@ const DWORD CBonTuner::WaitTsStream(const DWORD dwTimeOut)
 		return WAIT_ABANDONED;
 
 	case WAIT_OBJECT_0:
+		if(AsyncTsFifo->Size()<=AsyncTsCurStart)
+			return WAIT_TIMEOUT;
 	case WAIT_TIMEOUT:
 		return dwRet;
 	}
@@ -626,9 +650,11 @@ const DWORD CBonTuner::WaitTsStream(const DWORD dwTimeOut)
 const DWORD CBonTuner::GetReadyCount(void)
 {
 	if(!AsyncTsFifo) return 0;
-	if(AsyncTsFifo->Size()<=AsyncTsCurStart) return 0;
+	auto nStandby=AsyncTsCurStart;
+	auto nSz=AsyncTsFifo->Size();
+	if(nSz<=nStandby) return 0;
 
-	return (DWORD)(AsyncTsFifo->Size()-AsyncTsCurStart);
+	return (DWORD)(nSz-nStandby);
 }
 //---------------------------------------------------------------------------
 const BOOL CBonTuner::GetTsStream(BYTE *pDst, DWORD *pdwSize, DWORD *pdwRemain)
@@ -654,9 +680,11 @@ const BOOL CBonTuner::GetTsStream(BYTE **ppDst, DWORD *pdwSize, DWORD *pdwRemain
 	if (AsyncTsFifo->Size() > AsyncTsCurStart) {
 		if (AsyncTsFifo->Pop(ppDst, pdwSize, pdwRemain)) {
 			if (AsyncTsCurStart > 0) {
+				auto nStandby=AsyncTsCurStart;
+				auto nSz=AsyncTsFifo->Size();
 				if (pdwRemain) {
-					if (AsyncTsFifo->Size() > AsyncTsCurStart)
-						*pdwRemain = (DWORD)AsyncTsFifo->Size() - AsyncTsCurStart;
+					if (nSz > nStandby)
+						*pdwRemain = (DWORD)nSz - nStandby;
 					else
 						*pdwRemain = 0 ;
 				}
@@ -707,14 +735,20 @@ LPCTSTR CBonTuner::EnumChannelName(const DWORD dwSpace, const DWORD dwChannel)
 //---------------------------------------------------------------------------
 const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 {
+	exclusive_lock elock(&ChExclusive);
+
 	if(!TunerOpened||!AsyncTsFifo) return FALSE ;
 	if(dwSpace>=DWORD(Spaces.size())) return FALSE ;
 	const SPACE &Space = Spaces[dwSpace] ;
-	if(dwChannel>=Space.Ports.size()) return FALSE ;
+	if(dwChannel>=DWORD(Space.Ports.size())) return FALSE ;
 	if(CurSpace==dwSpace&&CurChannel==dwChannel) return TRUE ;
+
 
 	StopAsyncTsThread();
 	SocClose();
+	if(CurSpace!=dwSpace)
+		WinSockFinalize();
+
 	CurChannel = 0xFFFFFFFF ;
 	CurSpace = 0xFFFFFFFF ;
 
@@ -723,7 +757,12 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 	else if(Space.Type == SOCX_TCP)
 		SocType = SOCK_STREAM ;
 
-	AsyncTsFifo->Purge(true) ;
+	AsyncTsFifo->Purge(true);
+
+	if(CurSpace!=dwSpace) {
+		if(!WinSockInitialize())
+			return FALSE ;
+	}
 
 	if(!SocOpen(HOSTNAME,Space.Ports[dwChannel].first)) {
 		SocClose();
