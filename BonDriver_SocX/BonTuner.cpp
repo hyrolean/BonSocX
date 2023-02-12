@@ -749,8 +749,7 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 	if(CurSpace!=dwSpace)
 		WinSockFinalize();
 
-	CurChannel = 0xFFFFFFFF ;
-	CurSpace = 0xFFFFFFFF ;
+	CurChannel = CurSpace = 0xFFFFFFFF ;
 
 	if(Space.Type == SOCX_UDP)
 		SocType = SOCK_DGRAM ;
